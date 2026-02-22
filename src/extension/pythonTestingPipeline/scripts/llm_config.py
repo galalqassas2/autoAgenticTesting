@@ -1,161 +1,178 @@
 #!/usr/bin/env python3
-"""LLM client for Groq API with shared rate limiting."""
+"""LLM client — Ollama (primary) + Groq (fallback)."""
 
 import os
 import threading
 import time
 from pathlib import Path
 
-try:
-    import groq
+import groq
+import ollama
 
-    GROQ_AVAILABLE = True
-except ImportError:
-    GROQ_AVAILABLE = False
-
-# Load .env
 _env = Path(__file__).parent / ".env"
 if _env.exists():
     for line in _env.read_text().splitlines():
         if line.strip() and not line.startswith("#") and "=" in line:
             k, v = line.split("=", 1)
-            os.environ.setdefault(k.strip(), v.strip())
+            os.environ[k.strip()] = v.strip()
 
-# Model specs: context, max_output, rpm, tpm
-MODEL_SPECS = {
-    "openai/gpt-oss-120b": (131072, 65536, 1000, 250000),
-    "openai/gpt-oss-20b": (131072, 65536, 1000, 250000),
-    "moonshotai/kimi-k2-instruct-0905": (262144, 16384, 60, 10000),
-    "groq/compound": (131072, 8192, 200, 200000),
-    "meta-llama/llama-4-maverick-17b-128e-instruct": (131072, 8192, 1000, 250000),
-    "meta-llama/llama-4-scout-17b-16e-instruct": (131072, 8192, 1000, 250000),
-    "moonshotai/kimi-k2-instruct": (131072, 8192, 60, 10000),
-    "groq/compound-mini": (131072, 8192, 200, 200000),
+_OLLAMA_PRIORITY = [
+    "minimax-m2.7:cloud",
+    "qwen3-coder-next:cloud",
+    "gpt-oss:120b-cloud",
+]
+
+_GROQ_FALLBACK = [
+    "moonshotai/kimi-k2-instruct",
+    "meta-llama/llama-4-maverick-17b-128e-instruct",
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+    "moonshotai/kimi-k2-instruct-0905",
+    "groq/compound",
+    "groq/compound-mini",
+]
+
+# (context_tokens, max_output_tokens, rpm, tpm)
+MODEL_SPECS: dict[str, tuple[int, int, int, int]] = {
+    "minimax-m2.7:cloud":                            (200_000, 32_768, 1000, 1_000_000),
+    "qwen3-coder-next:cloud":                        (262_144, 32_768, 1000, 1_000_000),
+    "gpt-oss:120b-cloud":                            (131_072, 32_768, 1000, 1_000_000),
+    "moonshotai/kimi-k2-instruct":                   (131_072,  8_192,   60,    10_000),
+    "moonshotai/kimi-k2-instruct-0905":              (262_144, 16_384,   60,    10_000),
+    "meta-llama/llama-4-maverick-17b-128e-instruct": (131_072,  8_192, 1000,   250_000),
+    "meta-llama/llama-4-scout-17b-16e-instruct":     (131_072,  8_192, 1000,   250_000),
+    "groq/compound":                                 (131_072,  8_192,  200,   200_000),
+    "groq/compound-mini":                            (131_072,  8_192,  200,   200_000),
 }
-MODELS = list(MODEL_SPECS.keys())
 
+MODELS: list[str] = list(_OLLAMA_PRIORITY) + list(_GROQ_FALLBACK)
 
 
 class LLMClient:
-    """LLM client with per-key rate limiting."""
-
-    # Class-level storage for per-key cooldowns: {(key_hash, model): expiry_time}
-    _cooldowns = {}
+    _cooldowns: dict[tuple[str, str], float] = {}
     _lock = threading.Lock()
 
     def __init__(self, **_):
-        self.api_keys = [
-            v for k, v in sorted(os.environ.items()) if k.startswith("GROQ_API_KEY")
-        ]
-        if not self.api_keys:
-            print("⚠️  No GROQ_API_KEYs found.")
+        self.api_keys = [v for k, v in sorted(os.environ.items()) if k.startswith("GROQ_API_KEY")]
         self.key_idx = 0
-        self._client = self._make_client()
+        self._groq_client = self._make_groq_client()
+        self._ollama_client = self._make_ollama_client()
+        self.last_used_model: str | None = None
+        self._ollama_models: set[str] = set(_OLLAMA_PRIORITY)
+        self._discover_ollama_models()
 
-    def _make_client(self):
-        if GROQ_AVAILABLE and self.api_keys:
-            return groq.Groq(
-                api_key=self.api_keys[self.key_idx % len(self.api_keys)],
-                max_retries=0,
-                timeout=90.0,
-            )
+    def _make_ollama_client(self):
+        url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434").removesuffix("/v1")
+        try:
+            return ollama.Client(host=url)
+        except Exception as e:
+            print(f"⚠️  Ollama init failed: {e}")
+            return None
+
+    def _make_groq_client(self):
+        if self.api_keys:
+            return groq.Groq(api_key=self.api_keys[self.key_idx % len(self.api_keys)], max_retries=0, timeout=90.0)
         return None
 
-    def _key_hash(self):
-        """Short hash of current API key for tracking."""
-        return self.api_keys[self.key_idx][:12] if self.api_keys else ""
+    def _discover_ollama_models(self):
+        if not self._ollama_client:
+            return
+        try:
+            discovered = [m.model for m in self._ollama_client.list().models]
+            insert_pos = len(_OLLAMA_PRIORITY)
+            for name in discovered:
+                if name not in self._ollama_models:
+                    MODEL_SPECS.setdefault(name, (131_072, 8_192, 1000, 250_000))
+                    if name not in MODELS:
+                        MODELS.insert(insert_pos, name)
+                        insert_pos += 1
+                    self._ollama_models.add(name)
+            print(f"   🦙 Ollama: {sorted(self._ollama_models)}")
+        except Exception as e:
+            print(f"⚠️  Ollama discovery failed: {e}")
+
+    def _is_ollama(self, model: str) -> bool:
+        return model in self._ollama_models
+
+    def _cooldown_key(self, model: str) -> tuple[str, str]:
+        key = "" if self._is_ollama(model) else (self.api_keys[self.key_idx][:12] if self.api_keys else "")
+        return (key, model)
 
     def _set_cooldown(self, model: str, seconds: float):
-        """Set cooldown for current key + model."""
         with self._lock:
-            self._cooldowns[(self._key_hash(), model)] = time.time() + seconds
+            self._cooldowns[self._cooldown_key(model)] = time.time() + seconds
 
-    def _can_request(self, model: str) -> bool:
-        """Check if current key can request this model."""
+    def _is_ready(self, model: str) -> bool:
         with self._lock:
-            expiry = self._cooldowns.get((self._key_hash(), model), 0)
-            return time.time() >= expiry
+            return time.time() >= self._cooldowns.get(self._cooldown_key(model), 0)
 
-    def _find_available_model(self) -> str:
-        """Find a model available for current key."""
-        for m in MODELS:
-            if self._can_request(m):
-                return m
-        return None
+    def _next_available(self) -> str | None:
+        return next((m for m in MODELS if self._is_ready(m)), None)
 
     @property
-    def current_model(self):
-        return self._find_available_model() or MODELS[0]
+    def current_model(self) -> str:
+        return self._next_available() or MODELS[0]
 
     @property
-    def current_api_key(self):
+    def current_api_key(self) -> str | None:
         k = self.api_keys[self.key_idx] if self.api_keys else None
         return f"{k[:8]}...{k[-4:]}" if k else None
 
     def call(self, sys_p: str, usr_p: str, temp: float = 0.2) -> tuple[str, bool]:
-        if not GROQ_AVAILABLE:
-            raise ImportError("pip install groq")
-        if not self._client:
-            raise RuntimeError("No API keys")
-
         tokens = len(sys_p + usr_p) // 4
 
-        for attempt in range(20):
-            # Try each API key to find one with an available model
-            for key_attempt in range(len(self.api_keys)):
-                model = self._find_available_model()
-                if model:
-                    break
-                # Rotate to next key
-                self.key_idx = (self.key_idx + 1) % len(self.api_keys)
-                self._client = self._make_client()
-            else:
-                # No key has an available model, wait
-                print("   ⏳ All keys/models busy. Waiting 10s...")
-                time.sleep(10)
-                continue
+        for _ in range(20):
+            model = self._next_available()
 
-            if key_attempt > 0:
-                print(f"   🔄 Using API key {self.key_idx + 1}/{len(self.api_keys)}")
+            if not model:
+                for _ in range(len(self.api_keys)):
+                    self.key_idx = (self.key_idx + 1) % max(len(self.api_keys), 1)
+                    self._groq_client = self._make_groq_client()
+                    model = self._next_available()
+                    if model:
+                        break
+                if not model:
+                    print("   ⏳ All models on cooldown. Waiting 10s...")
+                    time.sleep(10)
+                    continue
 
             ctx, max_out, _, _ = MODEL_SPECS[model]
             if tokens > ctx * 0.9:
+                print(f"   ⚠️  Input too long for [{model}]. Skipping.")
                 self._set_cooldown(model, 60)
                 continue
 
+            is_ollama = self._is_ollama(model)
             try:
-                resp = self._client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": sys_p},
-                        {"role": "user", "content": usr_p},
-                    ],
-                    temperature=temp,
-                    max_tokens=min(max_out, 8192),
-                )
-                return resp.choices[0].message.content, False
-
-            except groq.RateLimitError as e:
-                retry = 60.0
-                try:
-                    retry = (
-                        float(e.response.headers.get("retry-after", 60))
-                        if e.response
-                        else 60
+                if is_ollama:
+                    resp = self._ollama_client.chat(
+                        model=model,
+                        messages=[{"role": "system", "content": sys_p}, {"role": "user", "content": usr_p}],
+                        options={"temperature": temp, "num_predict": min(max_out, 32_768)},
                     )
-                except Exception:
-                    pass
-                print(f"   ⚠️  Rate limit {model}: {min(retry, 120):.0f}s cooldown")
-                self._set_cooldown(model, min(retry, 120))
+                    text = resp["message"]["content"]
+                else:
+                    resp = self._groq_client.chat.completions.create(
+                        model=model,
+                        messages=[{"role": "system", "content": sys_p}, {"role": "user", "content": usr_p}],
+                        temperature=temp,
+                        max_tokens=min(max_out, 8_192),
+                    )
+                    text = resp.choices[0].message.content
 
-            except groq.APIStatusError as e:
-                cd = 300 if e.status_code == 413 else 30
-                print(f"   ⚠️  API {e.status_code} {model}")
-                self._set_cooldown(model, cd)
+                self.last_used_model = model
+                return text, False
 
             except Exception as e:
-                print(f"   ⚠️  Error {model}: {str(e)[:50]}")
-                self._set_cooldown(model, 15)
+                if isinstance(e, groq.RateLimitError):
+                    cd = min(float(e.response.headers.get("retry-after", 60)) if e.response else 60, 120)
+                    print(f"   ⚠️  Rate limit [{model}]: {cd:.0f}s")
+                elif isinstance(e, groq.APIStatusError):
+                    cd = 300 if e.status_code == 413 else 30
+                    print(f"   ⚠️  Groq {e.status_code} [{model}]")
+                else:
+                    cd = 60 if is_ollama else 15
+                    print(f"   ⚠️  Error [{model}]: {e}")
+                self._set_cooldown(model, cd)
 
         raise RuntimeError("Exhausted all LLM attempts")
 

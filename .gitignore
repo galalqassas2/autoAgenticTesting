@@ -39,8 +39,19 @@ Thumbs.db
 .git/
 
 # Test artifacts
-tests/test_generated_*.py
-tests/prompts_*.json
+**/tests/test_generated_*.py
+**/tests/prompts_*.json
+**/tests/report_*.md
+**/tests/governance_*.json
+**/tests/coverage_report_*.json
+coverage.*.json
 
-apps/tests
-apps/*.json
+# Local pipeline scratch files
+.pipeline_deps/
+.venv_pipeline/
+.manual_test_tmp/
+manual_test_tmp*/
+.pytest_tmp/
+*.pytest_tmp/
+pytest-cache-files-*/
+tmp_runner_checks*/
