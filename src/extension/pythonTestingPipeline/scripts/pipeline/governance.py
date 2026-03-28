@@ -124,7 +124,7 @@ class GovernanceLog:
             failure_breakdown[key] = failure_breakdown.get(key, 0) + 1
 
         return {
-            "governance_version": "1.1",
+            "governance_version": "1.2",
             "pipeline_start": time.strftime(
                 "%Y-%m-%d %H:%M:%S", time.localtime(self._start)
             ),
@@ -141,7 +141,7 @@ class GovernanceLog:
                 "failed_validations": failed,
                 "total_failures": len(self.failures),
                 "failure_breakdown": failure_breakdown,
-                "status": "PASS" if failed == 0 else "REVIEW_NEEDED",
+                "status": "PASS" if failed == 0 and not self.failures else "REVIEW_NEEDED",
             },
         }
 
