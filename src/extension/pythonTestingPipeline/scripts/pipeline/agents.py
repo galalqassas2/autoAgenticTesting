@@ -244,6 +244,8 @@ IMPORTANT RULES:
 4. IMPORT source modules directly for coverage (add project root to sys.path first)
 5. Use mocking for side effects (network, file I/O)
 6. Use proc.terminate() instead of signal.SIGINT for stopping processes
+7. Avoid top-level imports of source modules when they trigger optional dependencies or side effects; import lazily inside tests after patching
+8. Do not leave global state dirty; avoid raw os.chdir when possible and restore cwd/env if you must change them
 
 Generate a complete, executable PyTest file."""
 
@@ -309,12 +311,15 @@ Generate a complete, executable PyTest file."""
         coverage_percentage: float,
         uncovered_areas: str,
         syntax_errors: str = "",
+        validation_errors: str = "",
         security_issues: List[SecurityIssue] = None,
     ) -> Tuple[str, Path]:
         """Generates additional tests to improve coverage and address security issues."""
         reasons = []
         if coverage_percentage < 90.0:
             reasons.append(f"coverage ({coverage_percentage:.1f}%) below 90%")
+        if validation_errors:
+            reasons.append("semantic validation failed")
         if security_issues:
             severe = [
                 si for si in security_issues if si.severity in ("critical", "high")
@@ -353,6 +358,19 @@ Common issues to avoid:
 - Ensure all strings are properly closed
 - Ensure all parentheses, brackets, and braces are balanced
 - Make sure indentation is consistent (use 4 spaces)
+"""
+
+        validation_context = ""
+        if validation_errors:
+            validation_context = f"""\n\nCRITICAL: The previous test file failed semantic validation and must be fixed:
+{validation_errors}
+
+Common issues to avoid:
+- The suite must pass `python -m py_compile`
+- The suite must be collectable with `pytest --collect-only`
+- Avoid top-level imports of source modules with optional dependencies or side effects
+- Use lazy imports after patching optional dependencies
+- Do not leave cwd, env vars, or other process-global state dirty
 """
 
         # Build security context if there are security issues
@@ -397,7 +415,7 @@ WINDOWS COMPATIBILITY:
 - NEVER use `signal.SIGINT` to stop processes (not supported on Windows)
 - Use `proc.terminate()` or `proc.kill()` to stop subprocesses
 - For keyboard interrupt tests, mock the behavior instead of sending real signals
-{error_context}{security_context}
+{error_context}{validation_context}{security_context}
 Existing tests (may have errors - fix them):
 {existing_tests[:1500]}
 
@@ -414,6 +432,8 @@ IMPORTANT RULES:
 4. Each test function must start with 'test_'
 5. Use mocking for side effects (network, file I/O)
 6. Use proc.terminate() instead of signal.SIGINT for stopping processes
+7. Avoid top-level imports of source modules when they trigger optional dependencies or side effects; import lazily inside tests after patching
+8. Do not leave global state dirty; avoid raw os.chdir when possible and restore cwd/env if you must change them
 
 Generate a complete, executable PyTest file that:
 1. Fixes any existing syntax errors
