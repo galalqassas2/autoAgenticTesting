@@ -105,7 +105,10 @@ export interface IPythonTestingPipelineOptions {
 	readonly testOutputDir?: string;
 	/** Optional: whether to run tests automatically after generation. Defaults to true. */
 	readonly autoRunTests?: boolean;
-	/** Optional: collect coverage data when running tests. Defaults to true. */
+	/**
+	 * Optional compatibility flag for callers that want to express a coverage preference.
+	 * The current node-side pipeline implementation still collects coverage whenever tests run.
+	 */
 	readonly collectCoverage?: boolean;
 	/** Optional: target coverage percentage (default: 90) */
 	readonly targetCoverage?: number;

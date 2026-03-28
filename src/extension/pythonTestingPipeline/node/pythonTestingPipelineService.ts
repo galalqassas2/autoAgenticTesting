@@ -186,14 +186,14 @@ export class PythonTestingPipelineService implements IPythonTestingPipelineServi
 	}
 
 	/**
-	 * Requests human approval for identified scenarios.
-	 * In a real implementation, this would show a UI for user interaction.
+	 * Placeholder approval step.
+	 * This implementation currently returns the identified scenarios unchanged.
 	 */
 	async requestApproval(
 		scenarios: ITestScenariosOutput,
 		_token: CancellationToken
 	): Promise<ITestScenariosOutput> {
-		// Placeholder - in a real implementation, show UI dialog
+		// Placeholder - interactive approval is not wired into the node service yet.
 		return scenarios;
 	}
 

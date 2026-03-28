@@ -1,105 +1,73 @@
 # Python Automated Testing Pipeline
 
-A three-agent system for automated Python testing, security analysis, and coverage improvement.
+Current docs for the CLI, API, GUI, and extension-facing parts of the pipeline.
 
-## Overview
+## Flow
 
-This pipeline uses three specialized AI agents to ensure code quality:
-
-1.  **Identification Agent**: Finds test scenarios (edge cases, security, critical paths).
-2.  **Implementation Agent**: Generates PyTest scripts with security awareness.
-3.  **Evaluation Agent**: Runs tests, checks coverage (target 90%), and analyzes security.
-
-**Key Features:**
-
-- **Auto-Improvement**: Iteratively generates tests until coverage goals are met.
-- **Security Analysis**: Detects SQLi, XSS, secrets, and more.
-- **Robustness**: Auto-fixes syntax errors, rotates API keys, and handles rate limits.
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                     Python Testing Pipeline                              │
-├─────────────────────────────────────────────────────────────────────────┤
-│   ┌──────────────────┐    JSON     ┌──────────────────┐                │
-│   │   Identification │ ─────────▶ │  Human Approval  │                 │
-│   │      Agent       │            │     (Review)     │                 │
-│   └──────────────────┘            └────────┬─────────┘                 │
-│            │                               ▼                            │
-│            │                      ┌──────────────────┐                 │
-│            │                      │  Implementation  │                 │
-│            │                      │      Agent       │                 │
-│            │                      └────────┬─────────┘                 │
-│            │                               ▼                            │
-│            │                      ┌──────────────────┐                 │
-│            │                      │    Evaluation    │◀────────────┐   │
-│            │                      │   + Security     │             │   │
-│            │                      └────────┬─────────┘             │   │
-│            │                               │ Coverage < 90%?       │   │
-│            │                               ▼         Yes           │   │
-│            │                      ┌──────────────────┐             │   │
-│            │                      │  Generate More   │─────────────┘   │
-│            │                      │     Tests        │                 │
-│            │                      └──────────────────┘                 │
-└─────────────────────────────────────────────────────────────────────────┘
+```text
+Identify -> Approve or refine -> Implement -> Run tests -> Evaluate
+                                      ^                         |
+                                      |------ improve loop -----|
+Artifacts: tests, prompts, report, governance, coverage report
 ```
 
-## Usage
+## Entry Points
 
-### VS Code Integration
+- CLI
+  Run:
+  `python src/extension/pythonTestingPipeline/scripts/pythonTestingPipeline.py <codebase_path>`
+  Common options: `--auto-approve`, `--no-run-tests`, `--output-dir`, `--model`.
+  `--coverage` and `--run-tests` are compatibility flags.
+- API
+  Run:
+  `uvicorn src.extension.api.main:app --reload`
+- GUI
+  Run:
+  `python -m src.extension.GUI.main`
+- VS Code extension
+  The command palette action is `Agentic Testing: Generate Tests`
+  (`agentic-testing.generateTests`).
+  It currently handles folder selection and progress UI, but it does not yet run
+  the full end-to-end pipeline.
+- Internal model tools
+  `generatePythonTests`, `implementPythonTests`, and `evaluatePythonTests` are
+  internal tools, not public slash commands.
 
-Use the command in Copilot Chat:
+## Outputs
 
-```
-@workspace /generatePythonTests ./my_project
-```
+Default output location: `<codebase_path>/tests`, unless `--output-dir` is set.
 
-### CLI Usage
+Generated artifacts may include:
+- `test_generated_<timestamp>.py`
+- `prompts_<run_id>.json`
+- `report_<run_id>.md`
+- `governance_<run_id>.json`
+- `coverage_report_<run_id>.json`
 
-Run the standalone script:
+## Runtime Notes
 
-```bash
-# Basic usage
-python pythonTestingPipeline.py ./my_project
+- Python 3.10+ is the practical baseline for the code in `src/extension`.
+- Pipeline-related Python dependencies live in `requirements.txt`.
+- `scripts/llm_config.py` is the source of truth for model ordering.
+- Current model selection prefers Ollama-hosted models first, then Groq-backed
+  fallbacks.
+- `GROQ_API_KEY`, `GROQ_API_KEY_1`, and similar variables are rotated when the
+  client needs another key.
+- Safety checks are implemented in `scripts/prompt_safety.py`.
 
-# Common options
-python pythonTestingPipeline.py ./my_project --coverage       # Measure coverage
-python pythonTestingPipeline.py ./my_project --auto-approve   # Skip manual review
-python pythonTestingPipeline.py ./my_project --no-run-tests   # Generate only
-```
+## Current Caveats
 
-## Configuration
+- Coverage is effectively always collected when generated tests are executed.
+- API prompt-history discovery can legitimately return no runs.
+- API pipeline status is in-memory only.
+- The Python CLI is the most complete execution path today.
 
-**Requirements:**
+## Keep In Sync
 
-- Python 3.10+
-- `pip install pytest pytest-cov openai matplotlib`
-- VS Code + GitHub Copilot (for extension usage)
-
-**LLM Setup:**
-Configure `scripts/llm_config.py` and `scripts/.env`.
-
-- **Keys**: `GROQ_API_KEY`, `GROQ_API_KEY_1`, etc. (auto-rotates on 429 errors).
-- **Models**: Defaults to `openai/gpt-oss-120b`, falls back to `groq/compound`, `llama`, etc.
-
-## Agents & Communication
-
-Agents communicate via JSON.
-
-- **Identification**: Outputs `test_scenarios` (description, priority).
-- **Implementation**: Receives scenarios, outputs raw PyTest code.
-- **Evaluation**: Outputs `execution_summary`, `code_coverage_percentage`, and `security_issues`.
-
-**Security Checks:**
-The pipeline flags **Critical** to **Low** severity issues including:
-
-- SQL/Command Injection & XSS
-- Path Traversal & Data Exposure
-- Weak Authentication & Hardcoded Secrets
-
-## Contributing
-
-1.  Follow existing patterns.
-2.  Add unit tests (`npm run test:unit`).
-3.  Ensure TypeScript compilation passes.
+When updating docs here, cross-check:
+- `scripts/pythonTestingPipeline.py`
+- `scripts/llm_config.py`
+- `src/extension/api/main.py`
+- `src/extension/api/schemas.py`
+- `package.json`
+- `src/extension.ts`

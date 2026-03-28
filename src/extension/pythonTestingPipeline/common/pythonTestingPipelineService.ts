@@ -47,10 +47,11 @@ export interface IPythonTestingPipelineService {
 	identifyTestScenarios(codebasePath: string, targetFiles: readonly string[] | undefined, token: CancellationToken): Promise<ITestScenariosOutput>;
 
 	/**
-	 * Requests human approval for identified scenarios.
+	 * Approval hook for identified scenarios.
+	 * The current node-side implementation is non-interactive and returns the scenarios unchanged.
 	 * @param scenarios The identified test scenarios
 	 * @param token Cancellation token
-	 * @returns Approved scenarios (may be modified by user)
+	 * @returns Approved scenarios
 	 */
 	requestApproval(scenarios: ITestScenariosOutput, token: CancellationToken): Promise<ITestScenariosOutput>;
 

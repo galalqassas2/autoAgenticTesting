@@ -3,11 +3,13 @@
 Python Automated Testing Pipeline
 
 Usage:
-    python pythonTestingPipeline.py <codebase_path> [--coverage] [--auto-approve] \\
-        [--no-run-tests]
+    python pythonTestingPipeline.py <codebase_path> [--auto-approve] \\
+        [--no-run-tests] [--output-dir <dir>] [--model <model>]
 
 Note:
     Generated tests are run by default unless --no-run-tests is supplied.
+    The --coverage flag is accepted for compatibility, but coverage is already
+    collected automatically when tests are executed.
 
 Example:
     python pythonTestingPipeline.py ./my_project --auto-approve
@@ -475,6 +477,8 @@ Determine intent. Return JSON:
     ) -> dict:
         """
         Runs the complete testing pipeline.
+
+        Coverage is collected automatically whenever test execution is enabled.
         """
         print("=" * 60)
         print("🚀 Python Automated Testing Pipeline")
@@ -969,7 +973,14 @@ def main():
         action="store_true",
         help="Do not run generated tests",
     )
-    parser.add_argument("--coverage", action="store_true", help="Collect coverage")
+    parser.add_argument(
+        "--coverage",
+        action="store_true",
+        help=(
+            "Compatibility flag; coverage is already collected automatically "
+            "when tests run"
+        ),
+    )
     parser.add_argument(
         "--auto-approve", action="store_true", help="Auto-approve scenarios"
     )
