@@ -42,6 +42,7 @@ from pipeline.test_runner import (
     extract_dependencies,
     install_dependencies,
     run_tests,
+    validate_generated_test_file,
 )
 
 # ==================== Pipeline Implementation ====================
@@ -351,6 +352,7 @@ Determine intent. Return JSON:
         coverage_percentage: float,
         uncovered_areas: str,
         syntax_errors: str = "",
+        validation_errors: str = "",
         security_issues: list = None,
     ) -> tuple[str, Path]:
         """Generates additional tests to improve coverage and fix security issues."""
@@ -360,8 +362,108 @@ Determine intent. Return JSON:
             coverage_percentage,
             uncovered_areas,
             syntax_errors,
+            validation_errors,
             security_issues,
         )
+
+    @staticmethod
+    def _empty_test_results(message: str) -> dict:
+        """Return a minimal failed test result payload."""
+        return {
+            "output": message,
+            "exit_code": 1,
+            "total_tests": 0,
+            "passed": 0,
+            "failed": 0,
+            "coverage_percentage": 0.0,
+            "uncovered_areas_text": "",
+            "coverage_details": {},
+            "mutation_results": None,
+        }
+
+    @staticmethod
+    def _result_signature(
+        test_results: dict, evaluation: Optional[TestEvaluationOutput]
+    ) -> tuple:
+        """Build a stable signature for final replay comparison."""
+        return (
+            test_results.get("exit_code", 1),
+            test_results.get("total_tests", 0),
+            test_results.get("passed", 0),
+            test_results.get("failed", 0),
+            round(evaluation.code_coverage_percentage if evaluation else 0.0, 1),
+        )
+
+    def _final_acceptance_replay(
+        self,
+        test_file: Path,
+        codebase_path: Path,
+        scenarios: TestScenariosOutput,
+        expected_results: dict,
+        expected_evaluation: Optional[TestEvaluationOutput],
+        iteration: int,
+    ) -> tuple[dict, TestEvaluationOutput, bool]:
+        """Replay the saved suite and use that replay as the final source of truth."""
+        validation = validate_generated_test_file(test_file, codebase_path)
+        if not validation["passed"]:
+            message = f"{validation['stage']}: {validation['message']}"
+            governance_log.log_validation(
+                "final_acceptance", str(test_file), False, message
+            )
+            governance_log.log_failure(
+                FailureReason.TEST_FAILURE,
+                f"Final acceptance failed semantic validation: {message}",
+                iteration,
+            )
+            failed_results = self._empty_test_results(
+                message
+                + (
+                    f"\n\n{validation['output']}"
+                    if validation.get("output")
+                    else ""
+                )
+            )
+            failed_evaluation = self.evaluate_results(
+                failed_results, scenarios, codebase_path
+            )
+            return failed_results, failed_evaluation, False
+
+        replay_results = run_tests(test_file, codebase_path)
+        replay_evaluation = self.evaluate_results(
+            replay_results, scenarios, codebase_path
+        )
+
+        if not expected_results or expected_evaluation is None:
+            governance_log.log_validation(
+                "final_acceptance",
+                str(test_file),
+                True,
+                "Final acceptance replay succeeded",
+            )
+            return replay_results, replay_evaluation, True
+
+        expected_signature = self._result_signature(
+            expected_results, expected_evaluation
+        )
+        replay_signature = self._result_signature(replay_results, replay_evaluation)
+        if expected_signature == replay_signature:
+            governance_log.log_validation(
+                "final_acceptance",
+                str(test_file),
+                True,
+                "Final acceptance replay matched the saved suite metrics",
+            )
+            return replay_results, replay_evaluation, True
+
+        message = (
+            "Final acceptance replay mismatch: "
+            f"expected {expected_signature}, got {replay_signature}"
+        )
+        governance_log.log_validation(
+            "final_acceptance", str(test_file), False, message
+        )
+        governance_log.log_failure(FailureReason.TEST_FAILURE, message, iteration)
+        return replay_results, replay_evaluation, False
 
     def run_pipeline(
         self,
@@ -408,7 +510,12 @@ Determine intent. Return JSON:
             if should_run_tests:
                 deps = extract_dependencies(test_code)
                 if deps:
-                    dep_output, dep_exit = install_dependencies(deps, codebase_path)
+                    dep_output, dep_exit = install_dependencies(
+                        deps,
+                        codebase_path,
+                        test_code=test_code,
+                        project_root=codebase_path,
+                    )
                     results["dependencies_installed"] = deps
                     results["dependency_output"] = dep_output
 
@@ -424,14 +531,87 @@ Determine intent. Return JSON:
                 # Track progress to prevent getting stuck
                 best_coverage = 0.0
                 best_test_code = None  # Will store snapshot of best test code
+                best_test_results = None
+                best_evaluation = None
                 best_severe_count = float("inf")
                 consecutive_no_progress = 0
                 previous_coverage = 0.0  # For mutation testing delta trigger
+                current_coverage = 0.0
+                test_results = {}
+                evaluation = None
+                has_severe_security = False
 
                 while iteration < max_iterations:
                     iteration += 1
                     iteration_start = time_module.time()
                     print(f"\n--- Iteration {iteration} ---")
+
+                    validation = validate_generated_test_file(
+                        current_test_file, codebase_path
+                    )
+                    if not validation["passed"]:
+                        validation_message = (
+                            f"{validation['stage']}: {validation['message']}"
+                        )
+                        print(
+                            f"   âš ï¸  Semantic validation failed: {validation_message}"
+                        )
+                        governance_log.log_validation(
+                            "semantic_validator",
+                            str(current_test_file),
+                            False,
+                            validation_message,
+                        )
+                        governance_log.log_failure(
+                            FailureReason.TEST_FAILURE,
+                            validation_message,
+                            iteration,
+                        )
+
+                        consecutive_no_progress += 1
+                        if consecutive_no_progress >= 5:
+                            print(
+                                f"\nâš ï¸  No progress limits for {consecutive_no_progress} iterations. Stopping."
+                            )
+                            print(f"   Best coverage: {best_coverage:.1f}%")
+                            print(f"   Lowest severe issues: {best_severe_count}")
+                            break
+
+                        current_test_code, current_test_file = (
+                            self.generate_additional_tests(
+                                codebase_path,
+                                current_test_file,
+                                current_coverage,
+                                validation.get("output", "")
+                                or "Semantic validation failed before coverage could be measured",
+                                validation_errors=(
+                                    validation_message
+                                    + "\n\n"
+                                    + validation.get("output", "")[:2000]
+                                ),
+                            )
+                        )
+
+                        new_deps = extract_dependencies(current_test_code)
+                        if new_deps:
+                            install_dependencies(
+                                new_deps,
+                                codebase_path,
+                                test_code=current_test_code,
+                                project_root=codebase_path,
+                            )
+
+                        iteration_time = time_module.time() - iteration_start
+                        iteration_times.append(iteration_time)
+                        print(f"   â±ï¸  Iteration time: {iteration_time:.1f}s")
+                        continue
+
+                    governance_log.log_validation(
+                        "semantic_validator",
+                        str(current_test_file),
+                        True,
+                        validation["message"],
+                    )
 
                     # Determine if mutation testing should run this iteration
                     from pipeline.mutation_testing import should_enable_mutation_testing
@@ -511,6 +691,8 @@ Determine intent. Return JSON:
                         best_coverage = current_coverage
                         # Snapshot current test code (strings are immutable, so safe)
                         best_test_code = current_test_code
+                        best_test_results = test_results
+                        best_evaluation = evaluation
                         progress_made = True
 
                     if current_severe_count < best_severe_count:
@@ -587,6 +769,7 @@ Determine intent. Return JSON:
                             current_coverage,
                             uncovered_areas,
                             syntax_errors=syntax_errors,
+                            validation_errors="",
                             security_issues=security_issues
                             if has_severe_security
                             else None,
@@ -596,7 +779,12 @@ Determine intent. Return JSON:
                     # Re-extract and install any new dependencies
                     new_deps = extract_dependencies(current_test_code)
                     if new_deps:
-                        install_dependencies(new_deps, codebase_path)
+                        install_dependencies(
+                            new_deps,
+                            codebase_path,
+                            test_code=current_test_code,
+                            project_root=codebase_path,
+                        )
 
                     # Record iteration time
                     iteration_time = time_module.time() - iteration_start
@@ -609,7 +797,9 @@ Determine intent. Return JSON:
                     print(f"   Final coverage: {current_coverage:.1f}%")
                     if has_severe_security:
                         print("   ⚠️  Unresolved severe security issues remain")
-                    recommendations = evaluation.actionable_recommendations
+                    recommendations = (
+                        evaluation.actionable_recommendations if evaluation else []
+                    )
                     if recommendations:
                         print("   Recommendations:")
                         for rec in recommendations[:5]:
@@ -623,6 +813,68 @@ Determine intent. Return JSON:
                     with open(current_test_file, "w", encoding="utf-8") as f:
                         f.write(best_test_code)
                     current_test_code = best_test_code
+                    final_validation = validate_generated_test_file(
+                        current_test_file, codebase_path
+                    )
+                    if final_validation["passed"]:
+                        print(
+                            "   Re-running restored best suite so report and coverage match the saved file"
+                        )
+                        governance_log.log_validation(
+                            "semantic_validator",
+                            str(current_test_file),
+                            True,
+                            final_validation["message"],
+                        )
+                        test_results = run_tests(current_test_file, codebase_path)
+                        results["test_output"] = test_results["output"]
+                        results["exit_code"] = test_results["exit_code"]
+                        evaluation = self.evaluate_results(
+                            test_results, approved_scenarios, codebase_path
+                        )
+                        results["evaluation"] = asdict(evaluation)
+                        current_coverage = evaluation.code_coverage_percentage
+                    else:
+                        message = (
+                            f"{final_validation['stage']}: {final_validation['message']}"
+                        )
+                        governance_log.log_validation(
+                            "semantic_validator",
+                            str(current_test_file),
+                            False,
+                            message,
+                        )
+                        governance_log.log_failure(
+                            FailureReason.TEST_FAILURE,
+                            f"Restored best suite failed semantic validation: {message}",
+                            iteration,
+                        )
+                        if best_test_results is not None:
+                            test_results = best_test_results
+                            results["test_output"] = test_results["output"]
+                            results["exit_code"] = test_results["exit_code"]
+                        if best_evaluation is not None:
+                            evaluation = best_evaluation
+                            results["evaluation"] = asdict(evaluation)
+                            current_coverage = evaluation.code_coverage_percentage
+
+                results["test_file"] = str(current_test_file)
+                results["test_code"] = current_test_code
+                test_results, evaluation, acceptance_passed = (
+                    self._final_acceptance_replay(
+                        current_test_file,
+                        codebase_path,
+                        approved_scenarios,
+                        test_results,
+                        evaluation,
+                        iteration,
+                    )
+                )
+                results["test_output"] = test_results["output"]
+                results["exit_code"] = test_results["exit_code"]
+                results["evaluation"] = asdict(evaluation)
+                if not acceptance_passed:
+                    results["status"] = "failed"
 
             # Calculate total time
             total_time = time_module.time() - pipeline_start_time
@@ -631,7 +883,8 @@ Determine intent. Return JSON:
                 "iteration_times": [round(t, 2) for t in iteration_times],
                 "iterations_count": len(iteration_times),
             }
-            results["status"] = "completed"
+            if results.get("status") != "failed":
+                results["status"] = "completed"
 
             # Save all prompts to JSON for later analysis
             run_id = str(int(time_module.time()))
@@ -664,7 +917,7 @@ Determine intent. Return JSON:
             print("\n" + "=" * 60)
             print("✅ Pipeline Complete!")
             print("=" * 60)
-            print(f"   Test file: {test_file}")
+            print(f"   Test file: {results.get('test_file', test_file)}")
             print(f"   Scenarios: {len(approved_scenarios.test_scenarios)}")
 
             if "evaluation" in results:
