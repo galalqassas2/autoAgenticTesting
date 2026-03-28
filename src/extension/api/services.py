@@ -1,4 +1,4 @@
-"""Service layer - wraps pipeline components."""
+"""Service layer wrapping pipeline components and utility endpoints."""
 
 import ast
 import json
@@ -77,6 +77,20 @@ def _get(key, loader):
     return _cache[key]
 
 
+def _runtime_models() -> tuple[list[str], str]:
+    try:
+        from llm_config import MODELS
+
+        models = list(MODELS)
+        if models:
+            return models, models[0]
+    except Exception:
+        pass
+
+    fallback_models = ["minimax-m2.7:cloud"]
+    return fallback_models, fallback_models[0]
+
+
 def _pipeline():
     return _get(
         "pipeline", lambda: __import__("pythonTestingPipeline").PythonTestingPipeline
@@ -132,20 +146,12 @@ def _to_output(scenarios):
 
 # Info
 def get_info() -> InfoResponse:
-    try:
-        from llm_config import AVAILABLE_MODELS, DEFAULT_MODEL
-
-        return InfoResponse(
-            version="1.0.0",
-            available_models=AVAILABLE_MODELS,
-            default_model=DEFAULT_MODEL,
-        )
-    except ImportError:
-        return InfoResponse(
-            version="1.0.0",
-            available_models=["llama-3.3-70b-versatile"],
-            default_model="llama-3.3-70b-versatile",
-        )
+    available_models, default_model = _runtime_models()
+    return InfoResponse(
+        version="1.0.0",
+        available_models=available_models,
+        default_model=default_model,
+    )
 
 
 # Pipeline
@@ -329,14 +335,8 @@ def parse_log(req: ParseLogRequest) -> ParseLogResponse:
 
 
 def get_models() -> ModelsResponse:
-    try:
-        from llm_config import AVAILABLE_MODELS, DEFAULT_MODEL
-
-        return ModelsResponse(models=AVAILABLE_MODELS, default=DEFAULT_MODEL)
-    except ImportError:
-        return ModelsResponse(
-            models=["llama-3.3-70b-versatile"], default="llama-3.3-70b-versatile"
-        )
+    models, default_model = _runtime_models()
+    return ModelsResponse(models=models, default=default_model)
 
 
 # Pipeline status tracking (in-memory store)

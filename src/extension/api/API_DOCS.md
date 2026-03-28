@@ -1,54 +1,26 @@
 # API Documentation
 
-REST API for the Python Testing Pipeline. All endpoints are open (no authentication required).
+Compact route summary for the Python Testing Pipeline API.
 
-## Base URL
+Base URL:
 
-```
+```text
 http://localhost:8000
 ```
 
----
+Notes:
+- `/docs` and `/openapi.json` are the generated source of truth.
+- `coverage` is a compatibility input on pipeline runs; coverage is already
+  collected whenever generated tests are executed.
+- Pipeline status tracking is in-memory only.
 
-## Health & Info
+## Quick Examples
 
-### GET /health
-
-Health check.
-
-**Response:**
-
-```json
-{ "status": "healthy", "version": "1.0.0" }
-```
-
-### GET /info
-
-API configuration.
-
-**Response:**
+`POST /pipeline/run`
 
 ```json
 {
-  "version": "1.0.0",
-  "available_models": ["llama-3.3-70b-versatile"],
-  "default_model": "llama-3.3-70b-versatile"
-}
-```
-
----
-
-## Pipeline
-
-### POST /pipeline/run
-
-Run complete testing pipeline.
-
-**Request:**
-
-```json
-{
-  "codebase_path": "/absolute/path/to/code",
+  "codebase_path": "/absolute/path/to/codebase",
   "auto_approve": true,
   "run_tests": true,
   "coverage": false,
@@ -56,329 +28,123 @@ Run complete testing pipeline.
 }
 ```
 
-**Response:**
-
 ```json
 {
   "success": true,
-  "scenarios_count": 12,
-  "test_file": "/path/to/tests/test_generated.py",
-  "execution": { "total_tests": 12, "passed": 10, "failed": 2 },
+  "test_file": "/absolute/path/to/tests/test_generated_1712345678.py",
   "coverage_percent": 75.5,
-  "security_issues": [],
-  "recommendations": ["Add edge case tests"],
-  "prompts_file": "/path/to/prompts.json",
   "error": null
 }
 ```
 
-### POST /pipeline/run/stream
-
-Same as above but with SSE streaming output.
-
----
-
-## Agent 1: Identification
-
-### POST /agents/identify
-
-Identify test scenarios from codebase.
-
-**Request:**
+`POST /agents/safety/validate`
 
 ```json
 {
-  "codebase_path": "/absolute/path/to/code",
-  "model": null
+  "prompt": "Generate tests for the authentication module",
+  "model": "meta-llama/llama-guard-4-12b"
 }
 ```
 
-**Response:**
+## Shared Shapes
 
-```json
-{
-  "success": true,
-  "scenarios": {
-    "scenarios": [
-      { "scenario_description": "Test user login", "priority": "High" },
-      { "scenario_description": "Test input validation", "priority": "Medium" }
-    ],
-    "total": 2,
-    "by_priority": { "High": 1, "Medium": 1 }
-  },
-  "error": null
-}
-```
+- `TestScenario`: `{ "scenario_description": "...", "priority": "High|Medium|Low" }`
+- `SecurityIssue`: `{ "severity": "critical|high|medium|low", "issue": "...", "location": "...", "recommendation": "..." }`
+- Error envelope: `{ "success": false, "error": "..." }`
 
-### POST /agents/identify/refine
+## Health
 
-Refine scenarios with feedback.
+- `GET /health`
+  Returns `{ "status": "healthy", "version": "1.0.0" }`.
+- `GET /info`
+  Returns `{ "version", "available_models", "default_model" }`.
+  Model metadata comes from `scripts/llm_config.py` when available.
 
-**Request:**
+## Pipeline
 
-```json
-{
-  "scenarios": [{ "scenario_description": "Test login", "priority": "High" }],
-  "feedback": "Add more edge cases for invalid inputs",
-  "model": null
-}
-```
+- `POST /pipeline/run`
+  Request keys: `codebase_path`, `auto_approve`, `run_tests`, `coverage`, `model`.
+  Returns: `success`, `scenarios_count`, `test_file`, `execution`, `coverage_percent`,
+  `security_issues`, `recommendations`, `prompts_file`, `error`.
+- `POST /pipeline/run/stream`
+  Server-sent events. Emits a start line, then a serialized `PipelineResponse`.
+- `GET /pipeline/status/{run_id}`
+  Returns `PipelineStatusResponse` for an internally tracked run id.
 
-**Response:** Same format as `/agents/identify`
+## Agents
 
----
+- `POST /agents/identify`
+  Request: `codebase_path`, optional `model`.
+  Returns: `success`, `scenarios`, `error`.
+- `POST /agents/identify/refine`
+  Request: `scenarios`, `feedback`, optional `model`.
+  Returns the same shape as `/agents/identify`.
+- `POST /agents/implement`
+  Request: `scenarios`, `codebase_path`, optional `output_dir`, optional `model`.
+  Returns: `success`, `test_file`, `test_code`, `error`.
+- `POST /agents/implement/improve`
+  Request: `codebase_path`, `existing_test_file`, `coverage_percentage`,
+  `uncovered_areas`, optional `syntax_errors`, optional `security_issues`,
+  optional `model`.
+  Returns: `success`, `test_code`, `error`.
+- `POST /agents/implement/fix-syntax`
+  Request: `code`, `error_msg`, `codebase_path`, optional `model`.
+  Returns: `success`, `test_code`, `error`.
+- `POST /agents/evaluate`
+  Request: `test_results`, `scenarios`, `codebase_path`, optional `model`.
+  Returns: `success`, `evaluation`, `error`.
+- `POST /agents/safety/validate`
+  Request: `prompt`, optional `model`.
+  Returns: `success`, `is_safe`, `reason`, `error`.
+  If no safety client is configured, the service may return `reason: "skipped"`.
+- `POST /agents/interpret-input`
+  Request: `user_input`, `scenarios`, optional `model`.
+  Returns: `success`, `action`, `feedback`, `error`.
 
-## Agent 2: Implementation
+## Tests
 
-### POST /agents/implement
+- `POST /tests/run`
+  Request: `test_file`, `codebase_path`.
+  Returns: `success`, `total`, `passed`, `failed`, `coverage_percent`, `output`, `error`.
+- `POST /tests/parse-output`
+  Request: `output`.
+  Returns: `total`, `passed`, `failed`.
+- `POST /tests/coverage`
+  Request: `codebase_path`, optional `coverage_json_path`.
+  Returns: `success`, `total_percent`, `files`, `error`.
+  If `coverage_json_path` is omitted, the API reads `<codebase_path>/coverage.json`.
+- `POST /tests/validate-syntax`
+  Request: `code`.
+  Returns: `success`, `is_valid`, `errors`.
 
-Generate test code from scenarios.
+## Codebase
 
-**Request:**
+- `POST /codebase/analyze`
+  Request: `codebase_path`, optional `include_hidden`.
+  Returns: `success`, `files`, `total_files`, `total_lines`, `by_extension`, `error`.
+- `POST /codebase/files`
+  Request: `path`, optional `extensions`, optional `recursive`.
+  Returns: `success`, `files`, `total`, `error`.
 
-```json
-{
-  "scenarios": [{ "scenario_description": "Test login", "priority": "High" }],
-  "codebase_path": "/path/to/code",
-  "output_dir": "/path/to/tests",
-  "model": null
-}
-```
+## Prompts
 
-**Response:**
-
-```json
-{
-  "success": true,
-  "test_file": "/path/to/tests/test_generated.py",
-  "test_code": "import pytest\n\ndef test_login():\n    ...",
-  "error": null
-}
-```
-
-### POST /agents/implement/improve
-
-Improve tests for better coverage.
-
-**Request:**
-
-```json
-{
-  "codebase_path": "/path/to/code",
-  "existing_test_file": "/path/to/test.py",
-  "coverage_percentage": 60.0,
-  "uncovered_areas": "login.py lines 45-60",
-  "syntax_errors": "",
-  "security_issues": [],
-  "model": null
-}
-```
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "test_code": "# Improved test code...",
-  "error": null
-}
-```
-
-### POST /agents/implement/fix-syntax
-
-Fix syntax errors in test code.
-
-**Request:**
-
-```json
-{
-  "code": "def test():\n  return",
-  "error_msg": "IndentationError: expected an indented block",
-  "codebase_path": "/path/to/code",
-  "model": null
-}
-```
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "fixed_code": "def test():\n    return",
-  "error": null
-}
-```
-
----
-
-## Agent 3: Evaluation
-
-### POST /agents/evaluate
-
-Evaluate test results and security.
-
-**Request:**
-
-```json
-{
-  "test_results": { "passed": 8, "failed": 2, "output": "..." },
-  "scenarios": [{ "scenario_description": "Test login", "priority": "High" }],
-  "codebase_path": "/path/to/code",
-  "model": null
-}
-```
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "evaluation": {
-    "execution_summary": { "total_tests": 10, "passed": 8, "failed": 2 },
-    "code_coverage_percentage": 72.5,
-    "actionable_recommendations": ["Add error handling tests"],
-    "security_issues": [
-      {
-        "severity": "medium",
-        "issue": "SQL injection vulnerability",
-        "location": "db.py:45",
-        "recommendation": "Use parameterized queries"
-      }
-    ],
-    "has_severe_security_issues": false
-  },
-  "error": null
-}
-```
-
----
-
-## Test Execution
-
-### POST /tests/run
-
-Run tests with coverage.
-
-**Request:**
-
-```json
-{
-  "test_file": "/path/to/test.py",
-  "codebase_path": "/path/to/code"
-}
-```
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "total": 10,
-  "passed": 8,
-  "failed": 2,
-  "coverage_percent": 75.0,
-  "output": "===== 8 passed, 2 failed =====",
-  "error": null
-}
-```
-
-### POST /tests/parse-output
-
-Parse pytest output to structured data.
-
-**Request:**
-
-```json
-{ "output": "10 passed, 2 failed in 1.5s" }
-```
-
-**Response:**
-
-```json
-{ "total": 12, "passed": 10, "failed": 2 }
-```
-
----
+- `GET /prompts/history`
+  Returns discovered prompt runs from common output directories:
+  `success`, `runs`, `total`, `error`.
+- `GET /prompts/{run_id}`
+  Returns `success`, `run_id`, `prompts`, `error`.
 
 ## Utilities
 
-### POST /utils/extract-dependencies
-
-Extract package dependencies from code.
-
-**Request:**
-
-```json
-{ "test_code": "import pytest\nimport requests\n..." }
-```
-
-**Response:**
-
-```json
-{ "packages": ["pytest", "requests"] }
-```
-
-### POST /utils/install-dependencies
-
-Install packages.
-
-**Request:**
-
-```json
-{ "packages": ["pytest", "requests"], "cwd": "/path/to/project" }
-```
-
-**Response:**
-
-```json
-{ "success": true, "installed": ["pytest", "requests"], "failed": [] }
-```
-
-### POST /utils/parse-log
-
-Parse pipeline log line for metrics.
-
-**Request:**
-
-```json
-{ "line": "Agent 1: Identifying test scenarios" }
-```
-
-**Response:**
-
-```json
-{
-  "phase_update": ["identify", "active"],
-  "coverage": null,
-  "tests": null,
-  "scenarios": null,
-  "security_issues": null,
-  "agent_activation": 1
-}
-```
-
-### GET /utils/models
-
-List available LLM models.
-
-**Response:**
-
-```json
-{
-  "models": ["llama-3.3-70b-versatile"],
-  "default": "llama-3.3-70b-versatile"
-}
-```
-
----
-
-## Error Responses
-
-All endpoints may return:
-
-```json
-{
-  "success": false,
-  "error": "Error message describing what went wrong"
-}
-```
+- `POST /utils/extract-dependencies`
+  Request: `test_code`.
+  Returns: `packages`.
+- `POST /utils/install-dependencies`
+  Request: `packages`, `cwd`.
+  Returns: `success`, `installed`, `failed`.
+- `POST /utils/parse-log`
+  Request: `line`.
+  Returns parsed UI metadata such as `phase_update`, `coverage`, `tests`, and
+  `agent_activation`.
+- `GET /utils/models`
+  Returns `{ "models": [...], "default": "..." }`.

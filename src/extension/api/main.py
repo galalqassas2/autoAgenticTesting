@@ -1,4 +1,4 @@
-"""Python Testing Pipeline API."""
+"""REST API for the Python testing pipeline and related utilities."""
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -50,7 +50,10 @@ from .schemas import (
 
 app = FastAPI(
     title="Python Testing Pipeline API",
-    description="REST API for automated test generation",
+    description=(
+        "REST API for automated Python test generation, safety validation, "
+        "codebase inspection, prompt history lookup, and test utilities."
+    ),
     version="1.0.0",
 )
 app.add_middleware(
@@ -163,16 +166,16 @@ async def get_models():
     return services.get_models()
 
 
-# Safety Validation (High Priority)
+# Safety Validation
 @app.post(
     "/agents/safety/validate", response_model=SafetyValidateResponse, tags=["Agents"]
 )
 async def validate_safety(req: SafetyValidateRequest):
-    """Validate prompt safety using Llama Guard models."""
+    """Validate prompt safety with the configured safeguard model."""
     return services.validate_safety(req)
 
 
-# Codebase Analysis (High Priority)
+# Codebase Analysis
 @app.post(
     "/codebase/analyze", response_model=CodebaseAnalyzeResponse, tags=["Codebase"]
 )
@@ -187,25 +190,25 @@ async def list_files(req: ListFilesRequest):
     return services.list_codebase_files(req)
 
 
-# Pipeline Status (High Priority)
+# Pipeline Status
 @app.get(
     "/pipeline/status/{run_id}",
     response_model=PipelineStatusResponse,
     tags=["Pipeline"],
 )
 async def pipeline_status(run_id: str):
-    """Get the status of a pipeline run by ID."""
+    """Get the status of an internally tracked pipeline run."""
     return services.get_pipeline_status(run_id)
 
 
-# Coverage Report (High Priority)
+# Coverage Report
 @app.post("/tests/coverage", response_model=CoverageResponse, tags=["Tests"])
 async def get_coverage(req: CoverageRequest):
     """Get coverage report from coverage.json file."""
     return services.get_coverage_report(req)
 
 
-# Prompts History (Medium Priority)
+# Prompts History
 @app.get("/prompts/history", response_model=PromptsHistoryResponse, tags=["Prompts"])
 async def prompts_history():
     """Get list of saved prompt history runs."""
@@ -218,7 +221,7 @@ async def prompts_by_run(run_id: str):
     return services.get_prompts_by_run(run_id)
 
 
-# Input Interpretation (Medium Priority)
+# Input Interpretation
 @app.post(
     "/agents/interpret-input", response_model=InterpretInputResponse, tags=["Agents"]
 )
@@ -227,7 +230,7 @@ async def interpret_input(req: InterpretInputRequest):
     return services.interpret_input(req)
 
 
-# Syntax Validation (Medium Priority)
+# Syntax Validation
 @app.post(
     "/tests/validate-syntax", response_model=ValidateSyntaxResponse, tags=["Tests"]
 )
